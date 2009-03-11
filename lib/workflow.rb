@@ -26,7 +26,7 @@ module Workflow
     
     def event(name, args = {}, &action)
       @scoped_state.events[name.to_sym] =
-        Event.new(name, args[:transitions_to], (args[:meta] or {}), &action)
+        Event.new(name, args[:transitions_to], (args[:meta] or {}), args[:if], &action)
     end
     
     def on_entry(&proc)
@@ -74,10 +74,12 @@ module Workflow
   
   class Event
     
-    attr_accessor :name, :transitions_to, :meta, :action
+    attr_accessor :name, :transitions_to, :meta, :_if, :action
     
-    def initialize(name, transitions_to, meta = {}, &action)
-      @name, @transitions_to, @meta, @action = name, transitions_to.to_sym, meta, action
+    def initialize(name, transitions_to, meta = {}, if_clause=nil, &action)
+      transitions_to = transitions_to.to_sym if !transitions_to.is_a? Proc
+      @name, @transitions_to, @meta, @_if, @action =
+        name, transitions_to, meta, if_clause, action
     end
     
   end
@@ -138,8 +140,12 @@ module Workflow
           false
         end
       else
-        run_on_transition(current_state, spec.states[event.transitions_to], name, *args)
-        transition(current_state, spec.states[event.transitions_to], name, *args)
+        run_on_transition(current_state, event.transitions_to, name, *args)
+        if event._if.nil?
+          transition(current_state, event.transitions_to, name, *args)
+        else
+          transition(current_state, event.transitions_to, name, *args) if event._if.call(self)
+        end
         return_value
       end
     end
@@ -163,12 +169,27 @@ module Workflow
     end
 
     def transition(from, to, name, *args)
+      # add the ability to hand a proc that will
+      # decide event transitioned to,
+      # based on values of the object
+      if to.is_a? Proc
+        to = to.call(self)
+      end
+      to = spec.states[to]
       run_on_exit(from, to, name, *args)
       persist_workflow_state to.to_s
       run_on_entry(to, from, name, *args)
     end
 
     def run_on_transition(from, to, event, *args)
+      # TODO: clean this, and the above transition method
+      # up a bit. Leaving it like this for now because
+      # the to.call really needs to happen in instance
+      # method
+      if to.is_a? Proc
+        to = to.call(self)
+      end
+      to = spec.states[to]
       instance_exec(from.name, to.name, event, *args, &spec.on_transition_proc) if spec.on_transition_proc
     end
 
